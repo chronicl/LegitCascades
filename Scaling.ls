@@ -173,28 +173,31 @@
 
 
 [include: "atlas_layout", "probe_atlas", "pcg"]
-void TestPass(ivec2 size, sampler2D scene_tex, out vec4 color)
+void TestPass(
+  ivec2 size,
+  ivec2 c0_size,
+  int cascade_scaling_pow2,
+  int cascades_count,
+  int dir_scaling,
+  ivec2 c0_probe_size,
+  sampler2D scene_tex,
+  out vec4 color)
 {{
   void main()
   {
     uvec2 pixel_idx = uvec2(gl_FragCoord.xy);
     uvec2 atlas_texel_idx = pixel_idx / 1u;
 
-    uvec2 c0_size = uvec2(512, 128u);
-    int cascade_scaling_pow2 = 0;
-    uint cascades_count = 4u;
-    uint dir_scaling = 4u;
-    uvec2 c0_probe_size = uvec2(10u);
-    uint c0_dirs_count = c0_probe_size.x * c0_probe_size.y;
-    uvec2 atlas_size = GetAtlasSize(cascade_scaling_pow2, cascades_count, c0_size);
+    uint c0_dirs_count = uint(c0_probe_size.x * c0_probe_size.y);
+    uvec2 atlas_size = GetAtlasSize(cascade_scaling_pow2, uint(cascades_count), uvec2(c0_size));
 
     AtlasTexelLocation loc = GetAtlasPixelLocationPosFirst(
       atlas_texel_idx,
       cascade_scaling_pow2,
-      c0_probe_size,
-      dir_scaling,
-      cascades_count,
-      c0_size);
+      uvec2(c0_probe_size),
+      uint(dir_scaling),
+      uint(cascades_count),
+      uvec2(c0_size));
     uint dirs_count = loc.probe_layout.size.x * loc.probe_layout.size.y;
 
     uvec2 dir_idx2 = uvec2(loc.dir_idx % loc.probe_layout.size.x, loc.dir_idx / loc.probe_layout.size.x);
@@ -260,7 +263,30 @@ void ScenePass(ivec2 size, out vec4 radiance)
 void RenderGraphMain()
 {{
   void main()
-  {
+  {    
+    ivec2 size = GetSwapchainImage().GetSize();
+    Image scene_img = GetImage(size, rgba16f);
+    ScenePass(size, scene_img);
+
+    ivec2 c0_size;
+    c0_size.x = SliderInt("c0_size.x", 1, 1024, 512);
+    c0_size.y = SliderInt("c0_size.y", 1, 1024, 128);
+    int cascade_scaling_pow2 = SliderInt("cascade_scaling_pow2", -1, 1, 0);
+    uint cascades_count = SliderInt("cascades count", 1, 10, 4);
+    uint dir_scaling = SliderInt("dir_scaling", 1, 10, 4);
+    ivec2 c0_probe_size = ivec2(SliderInt("c0_probe_size", 1, 100, 10));
+    TestPass(
+      size,
+      c0_size,
+      cascade_scaling_pow2,
+      cascades_count,
+      dir_scaling,
+      c0_probe_size,
+      scene_img,
+      GetSwapchainImage());
+
+
+
     Text("Fps: " + GetSmoothFps());
   }
 }}
@@ -302,10 +328,7 @@ void RenderGraphMain()
   {
     float dt = GetTime() - ContextFloat("prev_time");
     ContextFloat("prev_time") = GetTime();
-    ivec2 size = GetSwapchainImage().GetSize();
-    Image scene_img = GetImage(size, rgba16f);
-    ScenePass(size, scene_img);
-    TestPass(size, scene_img, GetSwapchainImage());
+
     return 1000.0 / (1e-7f + SmoothOverTime(dt, "fps_count"));
   }
 }}
