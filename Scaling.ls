@@ -9,17 +9,14 @@ void OverlayTexShader(
   sampler2D tex,
   out vec4 color)
 {{
-  void main()
+  uvec2 pixel_idx = uvec2(gl_FragCoord.xy);
+  uvec2 tex_size = uvec2(textureSize(tex, 0));
+  if(pixel_idx.x < tex_size.x && pixel_idx.y < tex_size.y)
   {
-    uvec2 pixel_idx = uvec2(gl_FragCoord.xy);
-    uvec2 tex_size = uvec2(textureSize(tex, 0));
-    if(pixel_idx.x < tex_size.x && pixel_idx.y < tex_size.y)
-    {
-      color = vec4(texelFetch(tex, ivec2(pixel_idx), 0).rgb, 1.0);
-    }else
-    {
-      color = vec4(0.0);
-    }
+    color = vec4(texelFetch(tex, ivec2(pixel_idx), 0).rgb, 1.0);
+  }else
+  {
+    color = vec4(0.0);
   }
 }}
 
@@ -120,76 +117,73 @@ void RaymarchAtlasShader(
   sampler2D prev_atlas_tex,
   out vec4 color)
 {{
-  void main()
+  uvec2 atlas_texel_idx = uvec2(gl_FragCoord.xy);
+
+  uint c0_dirs_count = uint(c0_probe_size.x * c0_probe_size.y);
+  uvec2 atlas_size = GetAtlasSize(cascade_scaling_pow2, uint(cascades_count), uvec2(c0_size));
+
+  AtlasTexelLocation loc = GetAtlasPixelLocationPosFirst(
+    atlas_texel_idx,
+    cascade_scaling_pow2,
+    uvec2(c0_probe_size),
+    uint(dir_scaling),
+    uint(cascades_count),
+    uvec2(c0_size));
+  vec2 c0_probe_spacing = GetC0ProbeSpacing(size, loc.c0_probe_layout.count);
+  uint dirs_count = loc.probe_layout.size.x * loc.probe_layout.size.y;
+  uint prev_cascade_idx = loc.cascade_idx + 1u;
+  CascadeLayout prev_cascade_layout = GetCascadeLayout(cascade_scaling_pow2, prev_cascade_idx, c0_size);
+  ProbeLayout prev_probe_layout = GetProbeLayout(prev_cascade_idx, loc.c0_probe_layout, loc.probe_scaling, prev_cascade_layout.size);
+
+  vec2 prev_probe_spacing = GetProbeSpacing(c0_probe_spacing, prev_cascade_idx, loc.probe_scaling.spacing_scaling);
+  GridTransform prev_probe_to_screen = GetProbeToScreenTransform(prev_probe_spacing);
+
+  uvec2 dir_idx2 = uvec2(loc.dir_idx % loc.probe_layout.size.x, loc.dir_idx / loc.probe_layout.size.x);
+  if(
+    loc.probe_idx.x < loc.probe_layout.count.x &&
+    loc.probe_idx.y < loc.probe_layout.count.y &&
+    loc.dir_idx < dirs_count)
   {
-    uvec2 atlas_texel_idx = uvec2(gl_FragCoord.xy);
+    vec2 probe_spacing = GetProbeSpacing(c0_probe_spacing, loc.cascade_idx, loc.probe_scaling.spacing_scaling);
+    GridTransform probe_to_screen = GetProbeToScreenTransform(probe_spacing);
+    vec2 screen_pos = ApplyTransform(probe_to_screen, vec2(loc.probe_idx));
 
-    uint c0_dirs_count = uint(c0_probe_size.x * c0_probe_size.y);
-    uvec2 atlas_size = GetAtlasSize(cascade_scaling_pow2, uint(cascades_count), uvec2(c0_size));
+    uint prev_dirs_count = dirs_count * dir_scaling;
 
-    AtlasTexelLocation loc = GetAtlasPixelLocationPosFirst(
-      atlas_texel_idx,
-      cascade_scaling_pow2,
-      uvec2(c0_probe_size),
-      uint(dir_scaling),
-      uint(cascades_count),
-      uvec2(c0_size));
-    vec2 c0_probe_spacing = GetC0ProbeSpacing(size, loc.c0_probe_layout.count);
-    uint dirs_count = loc.probe_layout.size.x * loc.probe_layout.size.y;
-    uint prev_cascade_idx = loc.cascade_idx + 1u;
-    CascadeLayout prev_cascade_layout = GetCascadeLayout(cascade_scaling_pow2, prev_cascade_idx, c0_size);
-    ProbeLayout prev_probe_layout = GetProbeLayout(prev_cascade_idx, loc.c0_probe_layout, loc.probe_scaling, prev_cascade_layout.size);
-
-    vec2 prev_probe_spacing = GetProbeSpacing(c0_probe_spacing, prev_cascade_idx, loc.probe_scaling.spacing_scaling);
-    GridTransform prev_probe_to_screen = GetProbeToScreenTransform(prev_probe_spacing);
-
-    uvec2 dir_idx2 = uvec2(loc.dir_idx % loc.probe_layout.size.x, loc.dir_idx / loc.probe_layout.size.x);
-    if(
-      loc.probe_idx.x < loc.probe_layout.count.x &&
-      loc.probe_idx.y < loc.probe_layout.count.y &&
-      loc.dir_idx < dirs_count)
+    for(uint dir_number = 0u; dir_number < dir_scaling; dir_number++)
     {
-      vec2 probe_spacing = GetProbeSpacing(c0_probe_spacing, loc.cascade_idx, loc.probe_scaling.spacing_scaling);
-      GridTransform probe_to_screen = GetProbeToScreenTransform(probe_spacing);
-      vec2 screen_pos = ApplyTransform(probe_to_screen, vec2(loc.probe_idx));
+      uint prev_dir_idx = loc.dir_idx * dir_scaling + dir_number;
+      float ang = 2.0f * pi * (float(prev_dir_idx) + 0.5f) / float(prev_dirs_count);
+      vec2 ray_dir = vec2(cos(ang), sin(ang));
 
-      uint prev_dirs_count = dirs_count * dir_scaling;
+      vec4 radiance = CastMergedIntervalBilinearFix(
+        size,
+        screen_pos,
+        ray_dir,
+        GetIntervalMinmax(loc.cascade_idx, float(dir_scaling)) * c0_dist,
+        2.0f * pow(loc.probe_scaling.spacing_scaling.x, float(loc.cascade_idx)),
+        prev_cascade_layout,
+        prev_probe_layout,
+        prev_probe_to_screen,
+        prev_cascade_idx,
+        prev_dir_idx,
+        prev_atlas_tex,
+        scene_tex);
 
-      for(uint dir_number = 0u; dir_number < dir_scaling; dir_number++)
-      {
-        uint prev_dir_idx = loc.dir_idx * dir_scaling + dir_number;
-        float ang = 2.0f * pi * (float(prev_dir_idx) + 0.5f) / float(prev_dirs_count);
-        vec2 ray_dir = vec2(cos(ang), sin(ang));
-
-        vec4 radiance = CastMergedIntervalBilinearFix(
-          size,
-          screen_pos,
-          ray_dir,
-          GetIntervalMinmax(loc.cascade_idx, float(dir_scaling)) * c0_dist,
-          2.0f * pow(loc.probe_scaling.spacing_scaling.x, float(loc.cascade_idx)),
-          prev_cascade_layout,
-          prev_probe_layout,
-          prev_probe_to_screen,
-          prev_cascade_idx,
-          prev_dir_idx,
-          prev_atlas_tex,
-          scene_tex);
-
-        color += radiance / float(dir_scaling);
-      }
-      /*vec3 probe_col = hash3i3f(ivec3(loc.probe_idx, 0));
-      vec3 dir_col = hash3i3f(ivec3(loc.dir_idx, 0, 0));
-      vec3 cascade_col = hash3i3f(ivec3(loc.cascade_idx, 1, 0));
-      color = vec4(mix(dir_col, cascade_col, 0.8f), 1.0);*/
+      color += radiance / float(dir_scaling);
+    }
+    /*vec3 probe_col = hash3i3f(ivec3(loc.probe_idx, 0));
+    vec3 dir_col = hash3i3f(ivec3(loc.dir_idx, 0, 0));
+    vec3 cascade_col = hash3i3f(ivec3(loc.cascade_idx, 1, 0));
+    color = vec4(mix(dir_col, cascade_col, 0.8f), 1.0);*/
+  }else
+  {
+    if(atlas_texel_idx.x < atlas_size.x && atlas_texel_idx.y < atlas_size.y)
+    {
+      color = vec4(0.2, 0.0, 0.0, 1.0);
     }else
     {
-      if(atlas_texel_idx.x < atlas_size.x && atlas_texel_idx.y < atlas_size.y)
-      {
-        color = vec4(0.2, 0.0, 0.0, 1.0);
-      }else
-      {
-        color = vec4(0.0, 0.0, 0.0, 1.0);
-      }
+      color = vec4(0.0, 0.0, 0.0, 1.0);
     }
   }
 }}
@@ -206,111 +200,99 @@ void FinalGatheringShader(
   sampler2D atlas_tex,
   out vec4 color)
 {{
-  void main()
+  vec2 screen_pos = gl_FragCoord.xy;
+  uint cascade_idx = 0u;
+
+  ProbeLayout c0_probe_layout;
+  c0_probe_layout.size = c0_probe_size;
+  c0_probe_layout.count = c0_size / c0_probe_layout.size;
+  ProbeScaling probe_scaling = GetProbeScaling(cascade_scaling_pow2, dir_scaling);
+  CascadeLayout cascade_layout = GetCascadeLayout(cascade_scaling_pow2, cascade_idx, c0_size);
+  vec2 c0_probe_spacing = GetC0ProbeSpacing(size, c0_probe_layout.count);
+  vec2 probe_spacing = GetProbeSpacing(c0_probe_spacing, cascade_idx, probe_scaling.spacing_scaling);
+  GridTransform probe_to_screen = GetProbeToScreenTransform(probe_spacing);
+  ProbeLayout probe_layout = GetProbeLayout(cascade_idx, c0_probe_layout, probe_scaling, cascade_layout.size);
+  uint dirs_count = probe_layout.size.x * probe_layout.size.y;
+
+  vec4 fluence = vec4(0.0f);
+  for(uint dir_idx = 0u; dir_idx < dirs_count; dir_idx++)
   {
-    vec2 screen_pos = gl_FragCoord.xy;
-    uint cascade_idx = 0u;
-
-    ProbeLayout c0_probe_layout;
-    c0_probe_layout.size = c0_probe_size;
-    c0_probe_layout.count = c0_size / c0_probe_layout.size;
-    ProbeScaling probe_scaling = GetProbeScaling(cascade_scaling_pow2, dir_scaling);
-    CascadeLayout cascade_layout = GetCascadeLayout(cascade_scaling_pow2, cascade_idx, c0_size);
-    vec2 c0_probe_spacing = GetC0ProbeSpacing(size, c0_probe_layout.count);
-    vec2 probe_spacing = GetProbeSpacing(c0_probe_spacing, cascade_idx, probe_scaling.spacing_scaling);
-    GridTransform probe_to_screen = GetProbeToScreenTransform(probe_spacing);
-    ProbeLayout probe_layout = GetProbeLayout(cascade_idx, c0_probe_layout, probe_scaling, cascade_layout.size);
-    uint dirs_count = probe_layout.size.x * probe_layout.size.y;
-
-    vec4 fluence = vec4(0.0f);
-    for(uint dir_idx = 0u; dir_idx < dirs_count; dir_idx++)
-    {
-      vec4 radiance = InterpProbe(
-        screen_pos,
-        dir_idx,
-        probe_layout.count,
-        cascade_layout,
-        probe_layout,
-        probe_to_screen,
-        atlas_tex);
-      fluence += radiance / float(dirs_count);
-    }
-
-    color = fluence;
+    vec4 radiance = InterpProbe(
+      screen_pos,
+      dir_idx,
+      probe_layout.count,
+      cascade_layout,
+      probe_layout,
+      probe_to_screen,
+      atlas_tex);
+    fluence += radiance / float(dirs_count);
   }
+
+  color = fluence;
 }}
 
 [rendergraph]
 [include: "fps", "atlas_layout"]
 void RenderGraphMain()
 {{
-  void main()
-  {    
-    uvec2 size = GetSwapchainImage().GetSize();
-    ClearShader(GetSwapchainImage());
-    uvec2 c0_size;
-    c0_size.x = SliderInt("c0_size.x", 1, 1024, 512);
-    c0_size.y = size.y * c0_size.x / size.x;
-    int cascade_scaling_pow2 = SliderInt("cascade_scaling_pow2", -1, 1, 0);
-    uint cascades_count = SliderInt("cascades count", 1, 10, 4);
-    uint dir_scaling = SliderInt("dir_scaling", 1, 10, 4);
-    uvec2 c0_probe_size = uvec2(SliderInt("c0_probe_size", 1, 100, 2));
-    float c0_dist = SliderFloat("c0_dist", 0.0f, 20.0f, 2.0f);
+  uvec2 size = GetSwapchainImage().GetSize();
+  ClearShader(GetSwapchainImage());
+  uvec2 c0_size;
+  c0_size.x = SliderInt("c0_size.x", 1, 1024, 256);
+  c0_size.y = size.y * c0_size.x / size.x;
+  int cascade_scaling_pow2 = SliderInt("cascade_scaling_pow2", -1, 1, 0);
+  uint cascades_count = SliderInt("cascades count", 1, 10, 4);
+  uint dir_scaling = SliderInt("dir_scaling", 1, 10, 4);
+  uvec2 c0_probe_size = uvec2(SliderInt("c0_probe_size", 1, 100, 2));
+  float c0_dist = SliderFloat("c0_dist", 0.0f, 20.0f, 10.0f);
 
-    Image scene_img = GetImage(size, rgba16f);
-    SceneShader(size, scene_img);
+  Image scene_img = GetImage(size, rgba16f);
+  SceneShader(size, scene_img);
 
-    uvec2 atlas_size = GetAtlasSize(cascade_scaling_pow2, cascades_count, c0_size);
-    Text("c0_size: " + c0_size + " atlas size: " + atlas_size);
-    Image merged_atlas_img = GetImage(atlas_size, rgba16f);
-    Image prev_atlas_img = GetImage(atlas_size, rgba16f);
-    RaymarchAtlasShader(
-      size,
-      c0_size,
-      c0_dist,
-      cascade_scaling_pow2,
-      cascades_count,
-      dir_scaling,
-      c0_probe_size,
-      scene_img,
-      prev_atlas_img,
-      merged_atlas_img
-    );
-    CopyShader(merged_atlas_img, prev_atlas_img);
+  uvec2 atlas_size = GetAtlasSize(cascade_scaling_pow2, cascades_count, c0_size);
+  Text("c0_size: " + c0_size + " atlas size: " + atlas_size);
+  Image merged_atlas_img = GetImage(atlas_size, rgba16f);
+  Image prev_atlas_img = GetImage(atlas_size, rgba16f);
+  RaymarchAtlasShader(
+    size,
+    c0_size,
+    c0_dist,
+    cascade_scaling_pow2,
+    cascades_count,
+    dir_scaling,
+    c0_probe_size,
+    scene_img,
+    prev_atlas_img,
+    merged_atlas_img
+  );
+  CopyShader(merged_atlas_img, prev_atlas_img);
 
-    FinalGatheringShader(
-      size,
-      c0_size,
-      cascade_scaling_pow2,
-      cascades_count,
-      dir_scaling,
-      c0_probe_size,
-      scene_img,
-      merged_atlas_img,
-      GetSwapchainImage()
-    );
-    OverlayTexShader(
-      merged_atlas_img,
-      GetSwapchainImage());
+  FinalGatheringShader(
+    size,
+    c0_size,
+    cascade_scaling_pow2,
+    cascades_count,
+    dir_scaling,
+    c0_probe_size,
+    scene_img,
+    merged_atlas_img,
+    GetSwapchainImage()
+  );
+  OverlayTexShader(
+    merged_atlas_img,
+    GetSwapchainImage());
 
-    Text("Fps: " + GetSmoothFps());
-  }
+  Text("Fps: " + GetSmoothFps());
 }}
 
 void ClearShader(out vec4 col)
 {{
-  void main()
-  {
-    col = vec4(0.0f, 0.0f, 0.0f, 1.0f);
-  }
+  col = vec4(0.0f, 0.0f, 0.0f, 1.0f);
 }}
 
 void CopyShader(sampler2D tex, out vec4 col)
 {{
-  void main()
-  {
-    col = texelFetch(tex, ivec2(gl_FragCoord.xy), 0);
-  }
+  col = texelFetch(tex, ivec2(gl_FragCoord.xy), 0);
 }}
 [declaration: "atlas_layout"]
 {{
@@ -558,19 +540,21 @@ void CopyShader(sampler2D tex, out vec4 col)
   }
 }}
 
-void SceneShader(uvec2 size, out vec4 radiance)
+[declaration: "scene"]
 {{
   vec4 Circle(vec4 prev_radiance, vec2 delta, float radius, vec4 circle_radiance)
   {
     return length(delta) < radius ? circle_radiance : prev_radiance;
   }
-  void main()
-  {
-    radiance = vec4(0.0f);
-    radiance = Circle(radiance, vec2(size / 2u) - gl_FragCoord.xy, 30.0, vec4(1.0f, 0.5f, 0.0f, 1.0f));
-    //radiance = Circle(radiance, vec2(size / 2u) + vec2(10.0, 0.0) - gl_FragCoord.xy, 30.0, vec4(0.1f, 0.1f, 0.1f, 1.0f));
-    radiance = Circle(radiance, vec2(size / 2u) + vec2(150.0, 50.0) - gl_FragCoord.xy, 30.0, vec4(0.0f, 0.0f, 0.0f, 1.0f));
-  }
+}}
+
+[include: "scene"]
+void SceneShader(uvec2 size, out vec4 radiance)
+{{
+  radiance = vec4(0.0f);
+  radiance = Circle(radiance, vec2(size / 2u) - gl_FragCoord.xy, 30.0, vec4(1.0f, 0.5f, 0.0f, 1.0f));
+  //radiance = Circle(radiance, vec2(size / 2u) + vec2(10.0, 0.0) - gl_FragCoord.xy, 30.0, vec4(0.1f, 0.1f, 0.1f, 1.0f));
+  radiance = Circle(radiance, vec2(size / 2u) + vec2(150.0, 50.0) - gl_FragCoord.xy, 30.0, vec4(0.0f, 0.0f, 0.0f, 1.0f));
 }}
 
 [declaration: "merging"]
