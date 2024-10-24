@@ -23,26 +23,28 @@ void OverlayTexShader(
   }
 }}
 
-[include: "atlas_layout", "probe_atlas", "pcg", "raymarching", "probe_regular_grid", "bilinear_interpolation"]
-void RaymarchAtlasShader(
-  uvec2 size,
-  uvec2 c0_size,
-  int cascade_scaling_pow2,
-  uint cascades_count,
-  uint dir_scaling,
-  uvec2 c0_probe_size,
-  sampler2D scene_tex,
-  sampler2D prev_atlas_tex,
-  out vec4 color)
+
+[include:
+  "atlas_layout",
+  "probe_atlas",
+  "raymarching",
+  "probe_regular_grid",
+  "bilinear_interpolation",
+  "merging"]
+[declaration: "rc_probe_casting"]
 {{
   vec4 CastMergedIntervalBilinearFix(
+    uvec2 size,
     vec2 screen_pos,
     vec2 dir,
     vec2 interval_minmax,
+    CascadeLayout prev_cascade_layout,
     ProbeLayout prev_probe_layout,
     GridTransform prev_probe_to_screen,
     uint prev_cascade_idx,
-    uint prev_dir_idx)
+    uint prev_dir_idx,
+    sampler2D prev_atlas_tex,
+    sampler2D scene_tex)
   {
     GridTransform screen_to_prev_probe = GetInverseTransform(prev_probe_to_screen);
     vec2 prev_probe_idx = ApplyTransform(screen_to_prev_probe, screen_pos);
@@ -53,29 +55,70 @@ void RaymarchAtlasShader(
     vec4 merged_interval = vec4(0.0f);
     for(uint i = 0u; i < 4u; i++)
     {
-        ivec2 prev_probe_idx = clamp(bilinear_samples.base_idx + GetBilinearOffset(i), ivec2(0), ivec2(prev_probe_layout.count) - ivec2(1));
-        prev_probe_location.dir_index = prev_dir_index;
+      uvec2 prev_probe_idx = uvec2(clamp(bilinear_samples.base_idx + GetBilinearOffset(i), ivec2(0), ivec2(prev_probe_layout.count) - ivec2(1)));
+      uvec2 cascade_texel = GetCascadeTexel(prev_probe_idx, prev_dir_idx, prev_cascade_layout.size, prev_probe_layout.size);
+      uvec2 atlas_texel = prev_cascade_layout.offset + cascade_texel;
+      vec4 prev_interval = texelFetch(prev_atlas_tex, ivec2(atlas_texel), 0);
 
+      vec2 prev_probe_screen_pos = ApplyTransform(prev_probe_to_screen, vec2(prev_probe_idx));
 
-        int pixel_index = ProbeLocationToPixelIndex(prev_probe_location, c0_size);
-        ivec3 texel_index = PixelIndexToCubemapTexel(face_size, pixel_index);
-
-        vec4 prev_interval = vec4(0.0f, 0.0f, 0.0f, 1.0f);
-        if(prev_cascade_index < nCascades)
-            prev_interval = cubemapFetch(iChannel0, texel_index.z, texel_index.xy);
-
-        vec2 prev_screen_pos = GetProbeScreenPos(vec2(prev_probe_location.probe_index), prev_probe_location.cascade_index, c0_size);
-
-        vec2 ray_start = screen_pos * vec2(viewport_size) + dir * interval_length.x;
-        vec2 ray_end = prev_screen_pos * vec2(viewport_size) + dir * interval_length.y;                
-
-        RayHit ray_hit = radiance(iChannel1, ray_start, normalize(ray_end - ray_start), length(ray_end - ray_start));
-        merged_interval += MergeIntervals(ray_hit.radiance, prev_interval) * weights[i];
+      vec2 ray_start = screen_pos + dir * interval_minmax.x;
+      vec2 ray_end = prev_probe_screen_pos + dir * interval_minmax.y;                
+      vec4 hit_radiance = RaymarchRay(size, ray_start, ray_end, 2.0f, scene_tex);
+      merged_interval += MergeIntervals(hit_radiance, prev_interval) * weights[i];
     }
-    return merged_interval;*/
-    return vec4(0.0f);
+    return merged_interval;
   }
 
+  vec4 InterpProbe(
+    vec2 screen_pos,
+    uint dir_idx,
+    uvec2 probe_count,
+    CascadeLayout cascade_layout,
+    ProbeLayout probe_layout,
+    GridTransform prev_probe_to_screen,
+    sampler2D atlas_tex)
+  {
+    GridTransform screen_to_prev_probe = GetInverseTransform(prev_probe_to_screen);
+    vec2 probe_idx2f = ApplyTransform(screen_to_prev_probe, screen_pos);
+
+    BilinearSamples bilinear_samples = GetBilinearSamples(probe_idx2f);
+    vec4 weights = GetBilinearWeights(bilinear_samples.ratio);
+
+    vec4 interp_interval = vec4(0.0f);
+    for(uint i = 0u; i < 4u; i++)
+    {
+      uvec2 probe_idx = uvec2(clamp(bilinear_samples.base_idx + GetBilinearOffset(i), ivec2(0), ivec2(probe_layout.count) - ivec2(1)));
+      uvec2 cascade_texel = GetCascadeTexel(probe_idx, dir_idx, cascade_layout.size, probe_layout.size);
+      uvec2 atlas_texel = cascade_layout.offset + cascade_texel;
+      vec4 interval = texelFetch(atlas_tex, ivec2(atlas_texel), 0);
+      interp_interval += interval * weights[i];
+    }
+    return interp_interval;
+  }
+  float GetIntervalStart(uint cascade_idx, float interval_scaling)
+  {
+    return pow(interval_scaling, float(cascade_idx)) - 1.0f;
+  }
+  vec2 GetIntervalMinmax(uint cascade_idx, float interval_scaling)
+  {
+    return vec2(GetIntervalStart(cascade_idx, interval_scaling), GetIntervalStart(cascade_idx + 1u, interval_scaling));
+  }
+}}
+
+[include: "rc_probe_casting", "pcg"]
+void RaymarchAtlasShader(
+  uvec2 size,
+  uvec2 c0_size,
+  float c0_dist,
+  int cascade_scaling_pow2,
+  uint cascades_count,
+  uint dir_scaling,
+  uvec2 c0_probe_size,
+  sampler2D scene_tex,
+  sampler2D prev_atlas_tex,
+  out vec4 color)
+{{
   void main()
   {
     uvec2 atlas_texel_idx = uvec2(gl_FragCoord.xy);
@@ -90,7 +133,14 @@ void RaymarchAtlasShader(
       uint(dir_scaling),
       uint(cascades_count),
       uvec2(c0_size));
+    vec2 c0_probe_spacing = GetC0ProbeSpacing(size, loc.c0_probe_layout.count);
     uint dirs_count = loc.probe_layout.size.x * loc.probe_layout.size.y;
+    uint prev_cascade_idx = loc.cascade_idx + 1u;
+    CascadeLayout prev_cascade_layout = GetCascadeLayout(cascade_scaling_pow2, prev_cascade_idx, c0_size);
+    ProbeLayout prev_probe_layout = GetProbeLayout(prev_cascade_idx, loc.c0_probe_layout, loc.probe_scaling, prev_cascade_layout.size);
+
+    vec2 prev_probe_spacing = GetProbeSpacing(c0_probe_spacing, prev_cascade_idx, loc.probe_scaling.spacing_scaling);
+    GridTransform prev_probe_to_screen = GetProbeToScreenTransform(prev_probe_spacing);
 
     uvec2 dir_idx2 = uvec2(loc.dir_idx % loc.probe_layout.size.x, loc.dir_idx / loc.probe_layout.size.x);
     if(
@@ -98,20 +148,33 @@ void RaymarchAtlasShader(
       loc.probe_idx.y < loc.probe_layout.count.y &&
       loc.dir_idx < dirs_count)
     {
-      vec2 c0_probe_spacing = GetC0ProbeSpacing(size, loc.c0_probe_layout.count);
       vec2 probe_spacing = GetProbeSpacing(c0_probe_spacing, loc.cascade_idx, loc.probe_scaling.spacing_scaling);
       GridTransform probe_to_screen = GetProbeToScreenTransform(probe_spacing);
+      vec2 screen_pos = ApplyTransform(probe_to_screen, vec2(loc.probe_idx));
 
-      vec2 ray_start = ApplyTransform(probe_to_screen, vec2(loc.probe_idx));
-      float ang = 2.0f * pi * (float(loc.dir_idx) + 0.5f) / float(dirs_count);
+      uint prev_dirs_count = dirs_count * dir_scaling;
 
-      vec2 ray_dir = vec2(cos(ang), sin(ang));
-      vec2 ray_minmax = vec2(0.0f, 100.0f);
-      float step_size = 3.0f;
-      vec4 radiance = RaymarchInterval(
-        size, ray_start, ray_dir, ray_minmax, step_size, scene_tex);
+      for(uint dir_number = 0u; dir_number < dir_scaling; dir_number++)
+      {
+        uint prev_dir_idx = loc.dir_idx * dir_scaling + dir_number;
+        float ang = 2.0f * pi * (float(prev_dir_idx) + 0.5f) / float(prev_dirs_count);
+        vec2 ray_dir = vec2(cos(ang), sin(ang));
 
-      color = radiance;
+        vec4 radiance = CastMergedIntervalBilinearFix(
+          size,
+          screen_pos,
+          ray_dir,
+          GetIntervalMinmax(loc.cascade_idx, float(dir_scaling)) * c0_dist,
+          prev_cascade_layout,
+          prev_probe_layout,
+          prev_probe_to_screen,
+          prev_cascade_idx,
+          prev_dir_idx,
+          prev_atlas_tex,
+          scene_tex);
+
+        color += radiance / float(dir_scaling);
+      }
       /*vec3 probe_col = hash3i3f(ivec3(loc.probe_idx, 0));
       vec3 dir_col = hash3i3f(ivec3(loc.dir_idx, 0, 0));
       vec3 cascade_col = hash3i3f(ivec3(loc.cascade_idx, 1, 0));
@@ -129,6 +192,51 @@ void RaymarchAtlasShader(
   }
 }}
 
+[include: "rc_probe_casting", "pcg"]
+void FinalGatheringShader(
+  uvec2 size,
+  uvec2 c0_size,
+  int cascade_scaling_pow2,
+  uint cascades_count,
+  uint dir_scaling,
+  uvec2 c0_probe_size,
+  sampler2D scene_tex,
+  sampler2D atlas_tex,
+  out vec4 color)
+{{
+  void main()
+  {
+    vec2 screen_pos = gl_FragCoord.xy;
+    uint cascade_idx = 0u;
+
+    ProbeLayout c0_probe_layout;
+    c0_probe_layout.size = c0_probe_size;
+    c0_probe_layout.count = c0_size / c0_probe_layout.size;
+    ProbeScaling probe_scaling = GetProbeScaling(cascade_scaling_pow2, dir_scaling);
+    CascadeLayout cascade_layout = GetCascadeLayout(cascade_scaling_pow2, cascade_idx, c0_size);
+    vec2 c0_probe_spacing = GetC0ProbeSpacing(size, c0_probe_layout.count);
+    vec2 probe_spacing = GetProbeSpacing(c0_probe_spacing, cascade_idx, probe_scaling.spacing_scaling);
+    GridTransform probe_to_screen = GetProbeToScreenTransform(probe_spacing);
+    ProbeLayout probe_layout = GetProbeLayout(cascade_idx, c0_probe_layout, probe_scaling, cascade_layout.size);
+    uint dirs_count = probe_layout.size.x * probe_layout.size.y;
+
+    vec4 fluence = vec4(0.0f);
+    for(uint dir_idx = 0u; dir_idx < dirs_count; dir_idx++)
+    {
+      vec4 radiance = InterpProbe(
+        screen_pos,
+        dir_idx,
+        probe_layout.count,
+        cascade_layout,
+        probe_layout,
+        probe_to_screen,
+        atlas_tex);
+      fluence += radiance / float(dirs_count);
+    }
+
+    color = fluence;
+  }
+}}
 
 [rendergraph]
 [include: "fps", "atlas_layout"]
@@ -140,22 +248,24 @@ void RenderGraphMain()
     ClearShader(GetSwapchainImage());
     uvec2 c0_size;
     c0_size.x = SliderInt("c0_size.x", 1, 1024, 512);
-    c0_size.y = SliderInt("c0_size.y", 1, 1024, 128);
+    c0_size.y = size.y * c0_size.x / size.x;
     int cascade_scaling_pow2 = SliderInt("cascade_scaling_pow2", -1, 1, 0);
     uint cascades_count = SliderInt("cascades count", 1, 10, 4);
     uint dir_scaling = SliderInt("dir_scaling", 1, 10, 4);
-    uvec2 c0_probe_size = uvec2(SliderInt("c0_probe_size", 1, 100, 10));
+    uvec2 c0_probe_size = uvec2(SliderInt("c0_probe_size", 1, 100, 2));
+    float c0_dist = SliderFloat("c0_dist", 0.0f, 20.0f, 2.0f);
 
     Image scene_img = GetImage(size, rgba16f);
     SceneShader(size, scene_img);
 
     uvec2 atlas_size = GetAtlasSize(cascade_scaling_pow2, cascades_count, c0_size);
-
+    Text("c0_size: " + c0_size + " atlas size: " + atlas_size);
     Image merged_atlas_img = GetImage(atlas_size, rgba16f);
     Image prev_atlas_img = GetImage(atlas_size, rgba16f);
     RaymarchAtlasShader(
       size,
       c0_size,
+      c0_dist,
       cascade_scaling_pow2,
       cascades_count,
       dir_scaling,
@@ -166,6 +276,17 @@ void RenderGraphMain()
     );
     CopyShader(merged_atlas_img, prev_atlas_img);
 
+    FinalGatheringShader(
+      size,
+      c0_size,
+      cascade_scaling_pow2,
+      cascades_count,
+      dir_scaling,
+      c0_probe_size,
+      scene_img,
+      merged_atlas_img,
+      GetSwapchainImage()
+    );
     OverlayTexShader(
       merged_atlas_img,
       GetSwapchainImage());
@@ -220,8 +341,6 @@ void CopyShader(sampler2D tex, out vec4 col)
   }
   GridTransform GetInverseTransform(GridTransform transform)
   {
-    //dst = src * xy + zw
-    //src = (dst - zw) / xy
     vec2 inv_spacing = vec2(1.0) / transform.spacing;
     return GridTransform(inv_spacing, -transform.origin * inv_spacing);
   }
@@ -397,19 +516,37 @@ void CopyShader(sampler2D tex, out vec4 col)
 
     return loc;
   }
+
+  uvec2 GetCascadeTexel(uvec2 probe_idx, uint dir_idx, uvec2 cascade_size, uvec2 probe_size)
+  {
+    #if(POS_FIRST_LAYOUT)
+      uvec2 cells_count = probe_size;
+      uvec2 cell_size = cascade_size / cells_count;
+      uvec2 cell_idx = uvec2(dir_idx % probe_size.x, dir_idx / probe_size.x);
+      return cell_size * cell_idx + probe_idx;
+    #else
+      uvec2 dir_idx2 = uvec2(dir_idx % probe_size.x, dir_idx / probe_size.x);
+      return probe_idx * probe_size + dir_idx2;
+    #endif
+  }
 }}
 
 
 [declaration: "raymarching"]
 {{
-  vec4 RaymarchInterval(uvec2 size, vec2 ray_start, vec2 ray_dir, vec2 ray_minmax, float step_size, sampler2D scene_tex)
+  vec4 RaymarchRay(uvec2 size, vec2 ray_start, vec2 ray_end, float step_size, sampler2D scene_tex)
   {
     vec2 inv_size = vec2(1.0f) / vec2(size);
+
+    vec2 delta = ray_end - ray_start;
+    float len = length(delta);
+    vec2 ray_dir = delta / max(1e-5f, len);
+
     vec3 radiance = vec3(0.0f);
     float transmittance = 1.0f;
-    for(float ray_scale = ray_minmax.x; ray_scale < ray_minmax.y; ray_scale += step_size)
+    for(float offset = 0.0f; offset < len; offset += step_size)
     {
-      vec2 ray_pos = ray_start + ray_dir * ray_scale;
+      vec2 ray_pos = ray_start + ray_dir * offset;
       vec2 uv_pos = ray_pos * inv_size;
       vec4 ray_sample = textureLod(scene_tex, uv_pos, 0.0);
       radiance += ray_sample.rgb * transmittance * ray_sample.a;
@@ -429,7 +566,17 @@ void SceneShader(uvec2 size, out vec4 radiance)
   {
     radiance = vec4(0.0f);
     radiance = Circle(radiance, vec2(size / 2u) - gl_FragCoord.xy, 30.0, vec4(1.0f, 0.5f, 0.0f, 1.0f));
-    radiance = Circle(radiance, vec2(size / 2u) + vec2(10.0, 0.0) - gl_FragCoord.xy, 30.0, vec4(0.1f, 0.1f, 0.1f, 1.0f));
+    //radiance = Circle(radiance, vec2(size / 2u) + vec2(10.0, 0.0) - gl_FragCoord.xy, 30.0, vec4(0.1f, 0.1f, 0.1f, 1.0f));
+    radiance = Circle(radiance, vec2(size / 2u) + vec2(150.0, 50.0) - gl_FragCoord.xy, 30.0, vec4(0.0f, 0.0f, 0.0f, 1.0f));
+  }
+}}
+
+[declaration: "merging"]
+{{
+  vec4 MergeIntervals(vec4 near_interval, vec4 far_interval)
+  {
+      //return near_interval + far_interval;
+      return vec4(near_interval.rgb + near_interval.a * far_interval.rgb, near_interval.a * far_interval.a);
   }
 }}
 
