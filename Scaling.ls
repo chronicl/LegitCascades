@@ -38,6 +38,7 @@ void OverlayTexShader(
     vec2 screen_pos,
     vec2 dir,
     vec2 interval_minmax,
+    float step_size,
     CascadeLayout prev_cascade_layout,
     ProbeLayout prev_probe_layout,
     GridTransform prev_probe_to_screen,
@@ -64,7 +65,7 @@ void OverlayTexShader(
 
       vec2 ray_start = screen_pos + dir * interval_minmax.x;
       vec2 ray_end = prev_probe_screen_pos + dir * interval_minmax.y;                
-      vec4 hit_radiance = RaymarchRay(size, ray_start, ray_end, 2.0f, scene_tex);
+      vec4 hit_radiance = RaymarchRay(size, ray_start, ray_end, step_size, scene_tex);
       merged_interval += MergeIntervals(hit_radiance, prev_interval) * weights[i];
     }
     return merged_interval;
@@ -165,6 +166,7 @@ void RaymarchAtlasShader(
           screen_pos,
           ray_dir,
           GetIntervalMinmax(loc.cascade_idx, float(dir_scaling)) * c0_dist,
+          2.0f * pow(loc.probe_scaling.spacing_scaling.x, float(loc.cascade_idx)),
           prev_cascade_layout,
           prev_probe_layout,
           prev_probe_to_screen,
