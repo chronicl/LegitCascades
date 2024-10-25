@@ -158,7 +158,7 @@ void RaymarchAtlasShader(
       uint prev_dir_idx = loc.dir_idx * dir_scaling + dir_number;
       float ang = 2.0f * pi * (float(prev_dir_idx) + 0.5f) / float(prev_probe_layout.dirs_count);
       vec2 ray_dir = vec2(cos(ang), sin(ang));
-      float step_size = max(1e-4f, 2.0f * pow(loc.probe_scaling.size_scaling, float(loc.cascade_idx)));
+      float step_size = max(1e-4f, 2.0f * pow(loc.probe_scaling.spacing_scaling, float(loc.cascade_idx)));
       vec4 radiance = CastMergedIntervalBilinearFix(
         size,
         screen_pos,
@@ -392,7 +392,8 @@ void CopyShader(sampler2D tex, out vec4 col)
   struct ProbeScaling
   {
     uint dirs_scaling;
-    float size_scaling;
+    float spacing_scaling;
+    vec2 size_scaling;
   };
 
   ProbeScaling GetProbeScaling(
@@ -401,7 +402,8 @@ void CopyShader(sampler2D tex, out vec4 col)
   {
     ProbeScaling probe_scaling;
     vec2 aspect = vec2(1.0f, pow(2.0f, float(cascade_scaling_pow2)));
-    probe_scaling.size_scaling = sqrt(float(dirs_scaling) / (aspect.x * aspect.y));
+    probe_scaling.spacing_scaling = 1.0 * sqrt(float(dirs_scaling) / (aspect.x * aspect.y));
+    probe_scaling.size_scaling = probe_scaling.spacing_scaling * aspect;
     probe_scaling.dirs_scaling = dirs_scaling;
     return probe_scaling;
   }
@@ -425,7 +427,7 @@ void CopyShader(sampler2D tex, out vec4 col)
     ProbeScaling probe_scaling)
   {
     ProbeLayout probe_layout;
-    float probe_scale = pow(probe_scaling.size_scaling, float(cascade_idx));
+    vec2 probe_scale = pow(probe_scaling.size_scaling, vec2(cascade_idx));
     vec2 probe_size_2f = max(vec2(1.0f), ceil(vec2(c0_probe_size) * probe_scale - vec2(1e-5f)));
     probe_layout.size = uvec2(probe_size_2f);
     probe_layout.dirs_count = c0_probe_size.x * c0_probe_size.y * uint(1e-5f + pow(float(probe_scaling.dirs_scaling), float(cascade_idx)));
