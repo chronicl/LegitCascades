@@ -245,8 +245,8 @@ void RenderGraphMain()
   int cascade_scaling_pow2 = SliderInt("cascade_scaling_pow2", -1, 1, 0);
   uint cascades_count = SliderInt("cascades count", 1, 10, 4);
   uint dir_scaling = SliderInt("dir_scaling", 1, 10, 4);
-  uvec2 c0_probe_size = uvec2(SliderInt("c0_probe_size", 1, 100, 2));
-  float c0_dist = SliderFloat("c0_dist", 0.0f, 20.0f, 10.0f);
+  uvec2 c0_probe_size = uvec2(SliderInt("c0_probe_size", 1, 10, 2));
+  float c0_dist = SliderFloat("c0_dist", 0.0f, 40.0f, 10.0f);
 
   Image scene_img = GetImage(size, rgba16f);
   SceneShader(size, scene_img);
