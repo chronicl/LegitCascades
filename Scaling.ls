@@ -133,31 +133,32 @@ void RaymarchAtlasShader(
     uint(cascades_count),
     uvec2(c0_size));
   vec2 c0_probe_spacing = GetC0ProbeSpacing(size, loc.c0_probe_layout.count);
-  uint dirs_count = loc.probe_layout.size.x * loc.probe_layout.size.y;
   uint prev_cascade_idx = loc.cascade_idx + 1u;
   CascadeLayout prev_cascade_layout = GetCascadeLayout(cascade_scaling_pow2, prev_cascade_idx, c0_size);
-  ProbeLayout prev_probe_layout = GetProbeLayout(prev_cascade_idx, loc.c0_probe_layout, loc.probe_scaling, prev_cascade_layout.size);
 
-  vec2 prev_probe_spacing = GetProbeSpacing(c0_probe_spacing, prev_cascade_idx, loc.probe_scaling.spacing_scaling);
+  ProbeLayout prev_probe_layout = GetProbeLayout(
+    prev_cascade_idx, prev_cascade_layout.size, c0_probe_size, loc.probe_scaling);
+
+  //vec2 prev_probe_spacing = GetProbeSpacing(c0_probe_spacing, prev_cascade_idx, loc.probe_scaling.size_scaling);
+  vec2 prev_probe_spacing = GetProbeUniformSpacing(size, prev_probe_layout.count);
   GridTransform prev_probe_to_screen = GetProbeToScreenTransform(prev_probe_spacing);
   uvec2 dir_idx2 = GetProbeDirIdx2(loc.dir_idx, loc.probe_layout.size);
   if(
     loc.probe_idx.x < loc.probe_layout.count.x &&
     loc.probe_idx.y < loc.probe_layout.count.y &&
-    loc.dir_idx < dirs_count)
+    loc.dir_idx < loc.probe_layout.dirs_count)
   {
-    vec2 probe_spacing = GetProbeSpacing(c0_probe_spacing, loc.cascade_idx, loc.probe_scaling.spacing_scaling);
+    vec2 probe_spacing = GetProbeUniformSpacing(size, loc.probe_layout.count);
+    //vec2 probe_spacing = GetProbeSpacing(c0_probe_spacing, loc.cascade_idx, loc.probe_scaling.size_scaling);
     GridTransform probe_to_screen = GetProbeToScreenTransform(probe_spacing);
     vec2 screen_pos = ApplyTransform(probe_to_screen, vec2(loc.probe_idx));
-
-    uint prev_dirs_count = dirs_count * dir_scaling;
 
     for(uint dir_number = 0u; dir_number < dir_scaling; dir_number++)
     {
       uint prev_dir_idx = loc.dir_idx * dir_scaling + dir_number;
-      float ang = 2.0f * pi * (float(prev_dir_idx) + 0.5f) / float(prev_dirs_count);
+      float ang = 2.0f * pi * (float(prev_dir_idx) + 0.5f) / float(prev_probe_layout.dirs_count);
       vec2 ray_dir = vec2(cos(ang), sin(ang));
-      float step_size = max(1e-4f, 2.0f * pow(loc.probe_scaling.spacing_scaling.x, float(loc.cascade_idx)));
+      float step_size = max(1e-4f, 2.0f * pow(loc.probe_scaling.size_scaling, float(loc.cascade_idx)));
       vec4 radiance = CastMergedIntervalBilinearFix(
         size,
         screen_pos,
@@ -206,9 +207,10 @@ void FinalGatheringShader(
   ProbeScaling probe_scaling = GetProbeScaling(cascade_scaling_pow2, dir_scaling);
   CascadeLayout cascade_layout = GetCascadeLayout(cascade_scaling_pow2, cascade_idx, c0_size);
   vec2 c0_probe_spacing = GetC0ProbeSpacing(size, c0_probe_layout.count);
-  vec2 probe_spacing = GetProbeSpacing(c0_probe_spacing, cascade_idx, probe_scaling.spacing_scaling);
+  ProbeLayout probe_layout = GetProbeLayout(cascade_idx, cascade_layout.size, c0_probe_size, probe_scaling);
+  //vec2 probe_spacing = GetProbeSpacing(c0_probe_spacing, cascade_idx, probe_scaling.size_scaling);
+  vec2 probe_spacing = GetProbeUniformSpacing(size, probe_layout.count);
   GridTransform probe_to_screen = GetProbeToScreenTransform(probe_spacing);
-  ProbeLayout probe_layout = GetProbeLayout(cascade_idx, c0_probe_layout, probe_scaling, cascade_layout.size);
   uint dirs_count = probe_layout.size.x * probe_layout.size.y;
 
   vec4 fluence = vec4(0.0f);
@@ -345,10 +347,14 @@ void CopyShader(sampler2D tex, out vec4 col)
   {
     return vec2(size) / max(vec2(1e-5f), vec2(c0_probes_count));
   }
-  vec2 GetProbeSpacing(vec2 c0_probe_spacing, uint cascade_idx, vec2 probe_spacing_scaling)
+  vec2 GetProbeSpacing(vec2 c0_probe_spacing, uint cascade_idx, float probe_size_scaling)
   {
-    return c0_probe_spacing * pow(probe_spacing_scaling, vec2(cascade_idx));
+    return c0_probe_spacing * pow(vec2(probe_size_scaling), vec2(cascade_idx));
   }
+  vec2 GetProbeUniformSpacing(uvec2 size, uvec2 probes_count)
+  {
+    return vec2(size) / vec2(max(uvec2(1), probes_count));
+  }  
   GridTransform GetProbeToScreenTransform(vec2 probe_spacing)
   {
     return GridTransform(probe_spacing, probe_spacing * 0.5f);
@@ -385,8 +391,8 @@ void CopyShader(sampler2D tex, out vec4 col)
 
   struct ProbeScaling
   {
-    vec2 spacing_scaling;
-    vec2 size_scaling;
+    uint dirs_scaling;
+    float size_scaling;
   };
 
   ProbeScaling GetProbeScaling(
@@ -394,29 +400,16 @@ void CopyShader(sampler2D tex, out vec4 col)
     uint dirs_scaling)
   {
     ProbeScaling probe_scaling;
-    if(cascade_scaling_pow2 == 0) //constant size cascades
-    {
-      uint spacing_scaling_sqr = dirs_scaling;
-      probe_scaling.spacing_scaling = vec2(sqrt(float(spacing_scaling_sqr)));
-      probe_scaling.size_scaling = probe_scaling.spacing_scaling;
-    }else
-    if(cascade_scaling_pow2 == -1) //cascades get 2x smaller
-    {
-      uint spacing_scaling_sqr = dirs_scaling * 2u;
-      probe_scaling.spacing_scaling = vec2(sqrt(float(spacing_scaling_sqr)));
-      probe_scaling.size_scaling = probe_scaling.spacing_scaling * vec2(1.0f, 0.5f);
-    }else //cascades get 2x larger
-    {
-      float spacing_scaling_sqr = float(dirs_scaling) * 0.5f;
-      probe_scaling.spacing_scaling = vec2(sqrt(float(spacing_scaling_sqr)));
-      probe_scaling.size_scaling = probe_scaling.spacing_scaling * vec2(1.0f, 2.0f);
-    }
+    vec2 aspect = vec2(1.0f, pow(2.0f, float(cascade_scaling_pow2)));
+    probe_scaling.size_scaling = sqrt(float(dirs_scaling) / (aspect.x * aspect.y));
+    probe_scaling.dirs_scaling = dirs_scaling;
     return probe_scaling;
   }
   struct ProbeLayout
   {
     uvec2 count;
     uvec2 size;
+    uint dirs_count;
   };
   ProbeLayout GetC0ProbeLayout(uvec2 c0_size, uvec2 c0_probe_size)
   {
@@ -427,17 +420,24 @@ void CopyShader(sampler2D tex, out vec4 col)
   }
   ProbeLayout GetProbeLayout(
     uint cascade_idx,
-    ProbeLayout c0_probe_layout,
-    ProbeScaling probe_scaling,
-    uvec2 cascade_size)
+    uvec2 cascade_size,
+    uvec2 c0_probe_size,
+    ProbeScaling probe_scaling)
   {
-    float cascade_idxf = float(cascade_idx);
-    vec2 spacing_mult = pow(probe_scaling.spacing_scaling, vec2(cascade_idxf));
-    vec2 size_mult = pow(probe_scaling.size_scaling, vec2(cascade_idxf));
-    float eps = 1e-5f;
     ProbeLayout probe_layout;
-    probe_layout.size = uvec2(floor(vec2(c0_probe_layout.size) * size_mult + vec2(eps)));
-    probe_layout.count = cascade_size / max(uvec2(1u), probe_layout.size);
+    float probe_scale = pow(probe_scaling.size_scaling, float(cascade_idx));
+    vec2 probe_size_2f = max(vec2(1.0f), ceil(vec2(c0_probe_size) * probe_scale - vec2(1e-5f)));
+    probe_layout.size = uvec2(probe_size_2f);
+    probe_layout.dirs_count = c0_probe_size.x * c0_probe_size.y * uint(1e-5f + pow(float(probe_scaling.dirs_scaling), float(cascade_idx)));
+    if(probe_layout.size.x * probe_layout.size.y < probe_layout.dirs_count)
+    {
+      probe_layout.size.x++;
+    }
+    if(probe_layout.size.x * probe_layout.size.y < probe_layout.dirs_count)
+    {
+      probe_layout.size.y++;
+    }
+    probe_layout.count = cascade_size / probe_layout.size;
     return probe_layout;
   }
 
@@ -451,7 +451,7 @@ void CopyShader(sampler2D tex, out vec4 col)
   struct AtlasTexelLocation
   {
     ProbeLayout c0_probe_layout;
-
+    CascadeLayout cascade_layout;
     uint cascade_idx;
     uvec2 probe_idx;
     uint dir_idx;
@@ -474,13 +474,11 @@ void CopyShader(sampler2D tex, out vec4 col)
     uint cascades_count,
     uvec2 c0_size)
   {
-    CascadeLayout cascade_layout;
-
     AtlasTexelLocation loc;
     for(loc.cascade_idx = 0u; loc.cascade_idx < cascades_count; loc.cascade_idx++)
     {
-      cascade_layout = GetCascadeLayout(cascade_scaling_pow2, loc.cascade_idx, c0_size);
-      if(atlas_texel.y >= cascade_layout.offset.y && atlas_texel.y < cascade_layout.offset.y + cascade_layout.size.y)
+      loc.cascade_layout = GetCascadeLayout(cascade_scaling_pow2, loc.cascade_idx, c0_size);
+      if(atlas_texel.y >= loc.cascade_layout.offset.y && atlas_texel.y < loc.cascade_layout.offset.y + loc.cascade_layout.size.y)
       {
         break;
       }
@@ -489,13 +487,13 @@ void CopyShader(sampler2D tex, out vec4 col)
     loc.c0_probe_layout = GetC0ProbeLayout(c0_size, c0_probe_size);
 
     loc.probe_scaling = GetProbeScaling(cascade_scaling_pow2, dir_scaling);
-    loc.probe_layout = GetProbeLayout(loc.cascade_idx, loc.c0_probe_layout, loc.probe_scaling, cascade_layout.size);
+    loc.probe_layout = GetProbeLayout(loc.cascade_idx, loc.cascade_layout.size, c0_probe_size, loc.probe_scaling);
     
-    uvec2 cascade_texel = atlas_texel - cascade_layout.offset;
+    uvec2 cascade_texel = atlas_texel - loc.cascade_layout.offset;
 
     #if(POS_FIRST_LAYOUT)
       uvec2 cells_count = loc.probe_layout.size;
-      uvec2 cell_size = cascade_layout.size / max(uvec2(1), cells_count);
+      uvec2 cell_size = loc.cascade_layout.size / max(uvec2(1), cells_count);
       if(cells_count.x > 0u && cells_count.y > 0u && cell_size.x > 0u && cell_size.y > 0u)
       {
         loc.probe_idx = cascade_texel % max(uvec2(1u), cell_size);
