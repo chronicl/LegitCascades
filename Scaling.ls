@@ -41,6 +41,7 @@ void OverlayTexShader(
     GridTransform prev_probe_to_screen,
     uint prev_cascade_idx,
     uint prev_dir_idx,
+    uint cascades_count,
     sampler2D prev_atlas_tex,
     sampler2D scene_tex)
   {
@@ -59,7 +60,7 @@ void OverlayTexShader(
       uvec2 prev_probe_idx = uvec2(clamp(bilinear_samples.base_idx + GetBilinearOffset(i), ivec2(0), ivec2(prev_probe_layout.count) - ivec2(1)));
       uvec2 cascade_texel = GetCascadeTexel(prev_probe_idx, prev_dir_idx, prev_cascade_layout.size, prev_probe_layout.size);
       uvec2 atlas_texel = prev_cascade_layout.offset + cascade_texel;
-      vec4 prev_interval = texelFetch(prev_atlas_tex, ivec2(atlas_texel), 0);
+      vec4 prev_interval = prev_cascade_idx < cascades_count ? texelFetch(prev_atlas_tex, ivec2(atlas_texel), 0) : vec4(0.0);
 
       vec2 prev_probe_screen_pos = ApplyTransform(prev_probe_to_screen, vec2(prev_probe_idx));
 
@@ -144,6 +145,7 @@ void RaymarchAtlasShader(
   GridTransform prev_probe_to_screen = GetProbeToScreenTransform(prev_probe_spacing);
   uvec2 dir_idx2 = GetProbeDirIdx2(loc.dir_idx, loc.probe_layout.size);
   if(
+    loc.cascade_idx < cascades_count &&
     loc.probe_idx.x < loc.probe_layout.count.x &&
     loc.probe_idx.y < loc.probe_layout.count.y &&
     loc.dir_idx < loc.probe_layout.dirs_count)
@@ -170,6 +172,7 @@ void RaymarchAtlasShader(
         prev_probe_to_screen,
         prev_cascade_idx,
         prev_dir_idx,
+        cascades_count,
         prev_atlas_tex,
         scene_tex);
 
