@@ -113,6 +113,7 @@ void RaymarchAtlasShader(
   uvec2 size,
   uvec2 c0_size,
   float c0_dist,
+  float cm1_mult,
   int cascade_scaling_pow2,
   uint cascades_count,
   uint dir_scaling,
@@ -161,11 +162,12 @@ void RaymarchAtlasShader(
       float ang = 2.0f * pi * (float(prev_dir_idx) + 0.5f) / float(prev_probe_layout.dirs_count);
       vec2 ray_dir = vec2(cos(ang), sin(ang));
       float step_size = max(1e-4f, 2.0f * pow(loc.probe_scaling.spacing_scaling, float(loc.cascade_idx)));
+      float cm1_dist = c0_probe_spacing.x * cm1_mult;
       vec4 radiance = CastMergedIntervalBilinearFix(
         size,
         screen_pos,
         ray_dir,
-        GetIntervalMinmax(loc.cascade_idx, float(dir_scaling)) * c0_dist,
+        GetIntervalMinmax(loc.cascade_idx, float(dir_scaling)) * c0_dist + vec2(cm1_dist),
         step_size,
         prev_cascade_layout,
         prev_probe_layout,
@@ -194,6 +196,7 @@ void RaymarchAtlasShader(
 void FinalGatheringShader(
   uvec2 size,
   uvec2 c0_size,
+  float cm1_mult,
   int cascade_scaling_pow2,
   uint cascades_count,
   uint dir_scaling,
@@ -219,14 +222,30 @@ void FinalGatheringShader(
   vec4 fluence = vec4(0.0f);
   for(uint dir_idx = 0u; dir_idx < dirs_count; dir_idx++)
   {
-    vec4 radiance = InterpProbe(
+    /*vec4 radiance = InterpProbe(
       screen_pos,
       dir_idx,
       probe_layout.count,
       cascade_layout,
       probe_layout,
       probe_to_screen,
-      atlas_tex);
+      atlas_tex);*/
+    float ang = (float(dir_idx) + 0.5f) / float(dirs_count) * 2.0f * pi;
+    vec4 radiance = CastMergedIntervalBilinearFix(
+      size,
+      screen_pos,
+      vec2(cos(ang), sin(ang)),
+      vec2(0.0f, c0_probe_spacing.x * cm1_mult),
+      2.0f,
+      cascade_layout,
+      probe_layout,
+      probe_to_screen,
+      cascade_idx,
+      dir_idx,
+      cascades_count,
+      atlas_tex,
+      scene_tex);
+  
     fluence += radiance / float(dirs_count);
   }
 
@@ -247,6 +266,7 @@ void RenderGraphMain()
   uint dir_scaling = SliderInt("dir_scaling", 1, 10, 4);
   uvec2 c0_probe_size = uvec2(SliderInt("c0_probe_size", 1, 10, 2));
   float c0_dist = SliderFloat("c0_dist", 0.0f, 40.0f, 10.0f);
+  float cm1_mult = SliderFloat("cm1_mult", 0.0f, 5.0f, 1.0f);
 
   Image scene_img = GetImage(size, rgba16f);
   SceneShader(size, scene_img);
@@ -259,6 +279,7 @@ void RenderGraphMain()
     size,
     c0_size,
     c0_dist,
+    cm1_mult,
     cascade_scaling_pow2,
     cascades_count,
     dir_scaling,
@@ -272,6 +293,7 @@ void RenderGraphMain()
   FinalGatheringShader(
     size,
     c0_size,
+    cm1_mult,
     cascade_scaling_pow2,
     cascades_count,
     dir_scaling,
