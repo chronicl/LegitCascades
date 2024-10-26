@@ -262,7 +262,7 @@ void RenderGraphMain()
   c0_size.x = SliderInt("c0_size.x", 1, 1024, 256);
   c0_size.y = size.y * c0_size.x / size.x;
   int cascade_scaling_pow2 = SliderInt("cascade_scaling_pow2", -1, 1, 0);
-  uint cascades_count = SliderInt("cascades count", 1, 10, 4);
+  uint cascades_count = SliderInt("cascades count", 1, 10, 3);
   uint dir_scaling = SliderInt("dir_scaling", 1, 10, 4);
   uvec2 c0_probe_size = uvec2(SliderInt("c0_probe_size", 1, 10, 2));
   float c0_dist = SliderFloat("c0_dist", 0.0f, 40.0f, 10.0f);
